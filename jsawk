@@ -17,9 +17,48 @@ TMP2=`mktemp /tmp/tmp.XXXXXX`
 
 trap "rm -f $TMP1 $TMP2" SIGINT SIGTERM SIGHUP SIGQUIT
 
-cat <<'__END__' > $TMP1
+if [ -z "$JSAWK_JS" ]; then
+    echo "attempting to use node" >&2
+    run_js=node
+    cat <<'__JSAWK_NODEJS__' > $TMP1
+var jsdom  = require("jsdom").jsdom,
+    doc    = jsdom(null, null, {}),
+    window = doc.createWindow();
 
+var sys = require('util'),
+     fs = require('fs');
+window.print = function(t, l){
+    sys.print(t + " " + l);
+}
+var quit = process.exit;
+arguments = process.argv;
+// node has two superfluous argv entries
+arguments.shift();
+arguments.shift();
+function readStdin(inputLines) {
+    var buffer = new Buffer(1048576);
+    var size = fs.readSync(0, buffer, 0, 1048576, null);
+    return buffer.slice(0, size).toString();
+}
+
+__JSAWK_NODEJS__
+else
+    run_js=js
+    cat <<'__JSAWK_JS__' > $TMP1
 window    = this;     // the global object
+function readStdin(inputLines) {
+    var input = "";
+    for (var i=0; i<inputLines; i++) {
+      var line=readline();
+      input += (line ? line : "");
+      input += "\n";
+    }
+    return input;
+}
+__JSAWK_JS__
+fi
+
+cat <<'__END__' >> $TMP1
 window.IS = [];       // the input set
 window.RS = [];       // the result set
 window.$_ = {};       // the current element index
@@ -907,7 +946,7 @@ replace(/(?:^|:|,)(?:\s*\[)+/g, ''))) {
     var type  = args.shift();
     if (args.length > 0) {
       args = args.length > 1 ? args : args[0];
-      var ret  = typeof(args) == "string" ? args : json(args);
+      var ret  = typeof(args) == "string" ? args : window.json(args);
       doPrint(type, ret);
     }
   };
@@ -917,7 +956,7 @@ replace(/(?:^|:|,)(?:\s*\[)+/g, ''))) {
       ret.length;
       return ret;
     } catch (e) {
-      err("jsawk: JSONQuery parse error: '"+arguments[0]+"'");
+      window.err("jsawk: JSONQuery parse error: '"+arguments[0]+"'");
       quit(4);
     }
   };
@@ -941,9 +980,9 @@ replace(/(?:^|:|,)(?:\s*\[)+/g, ''))) {
         return {};
       } else {
         try {
-          return eval("("+input+")");
+          return JSON.parse(input); // eval("("+input+")");
         } catch (e) {
-          err("jsawk: JSON parse error: '"+input+"'");
+          window.err("jsawk: JSON parse error: '"+input+"'\n" + e);
           quit(2);
         }
       }
@@ -953,7 +992,7 @@ replace(/(?:^|:|,)(?:\s*\[)+/g, ''))) {
     try {
       return fun.call(obj);
     } catch (e) {
-      err("jsawk: js error: "+e);
+      window.err("jsawk: 975 js error: "+e);
       quit(3);
     }
   };
@@ -961,7 +1000,7 @@ replace(/(?:^|:|,)(?:\s*\[)+/g, ''))) {
     try {
       return eval("(function() { "+fun+"; return this })");
     } catch (e) {
-      err("jsawk: script parse error: '"+fun+"'");
+      window.err("jsawk: script parse error: '"+fun+"'");
       quit(3);
     }
   };
@@ -969,7 +1008,7 @@ replace(/(?:^|:|,)(?:\s*\[)+/g, ''))) {
     try {
       return JSON.stringify.apply(window, arguments);
     } catch (e) {
-      err("jsawk: JSON stringify error: "+e);
+      window.err("jsawk: JSON stringify error: "+e);
       quit(5);
     }
   };
@@ -985,7 +1024,7 @@ replace(/(?:^|:|,)(?:\s*\[)+/g, ''))) {
       try {
         fun.call(ary[i], i, ary[i]);
       } catch (e) {
-        err("jsawk: js error: "+e);
+        window.err("jsawk: 1007 js error: "+e);
         quit(3);
       }
     }
@@ -994,11 +1033,10 @@ replace(/(?:^|:|,)(?:\s*\[)+/g, ''))) {
 
 (function(argv) {
   argv = Array.prototype.slice.call(argv);
-
   var inputLines = argv.shift();
 
   var usage = function() {
-    err("Usage: jsq [-n] [-f jsfile1.js]* [-q jsonquery] "+
+    window.err("Usage: jsq [-n] [-f jsfile1.js]* [-q jsonquery] "+
         "[-b script] \\\n"+
         "           [-a script] [-v NAME=VALUE] [script]");
     quit(1);
@@ -1032,11 +1070,11 @@ replace(/(?:^|:|,)(?:\s*\[)+/g, ''))) {
         break;
       case "-b":
         if (argv.length < 1) usage();
-        befores.push(makeFilter(argv.shift()));
+        befores.push(window.makeFilter(argv.shift()));
         break;
       case "-a":
         if (argv.length < 1) usage();
-        afters.push(makeFilter(argv.shift()));
+        afters.push(window.makeFilter(argv.shift()));
         break;
       case "-v":
         if (argv.length < 1) usage();
@@ -1050,17 +1088,11 @@ replace(/(?:^|:|,)(?:\s*\[)+/g, ''))) {
     }
   }
 
-  var input="";
-
-  for (var i=0; i<inputLines; i++) {
-    var line=readline();  
-    input += (line ? line : "");  
-    input += "\n";  
-  }  
+  var input = readStdin(inputLines);
 
   var wrapped;
 
-  IS      = doJson(input);
+  IS      = window.doJson(input);
   wrapped = !(IS instanceof Array);
 
   if (wrapped)
@@ -1069,7 +1101,8 @@ replace(/(?:^|:|,)(?:\s*\[)+/g, ''))) {
   for (i in libs)
     load(libs[i]);
 
-  var f = makeFilter(fun);
+  var f = window.makeFilter(fun);
+f({});
 
   for (i in queries)
     IS = Q(queries[i], IS);
@@ -1078,13 +1111,14 @@ replace(/(?:^|:|,)(?:\s*\[)+/g, ''))) {
   $$ = IS;
 
   for (i in befores)
-    IS = doCall(befores[i], IS);
+    IS = window.doCall(befores[i], IS);
 
   RS = [];
 
   for ($_=0; $_<IS.length; $_++) {
     $$ = IS[$_]
-    var tmp = doCall(f, $$);
+    var tmp = window.doCall(f, $$);
+
     if (tmp != null) RS.push(tmp);
   }
 
@@ -1092,13 +1126,13 @@ replace(/(?:^|:|,)(?:\s*\[)+/g, ''))) {
   $$ = RS;
 
   for (i in afters)
-    RS = doCall(afters[i], RS);
+    RS = window.doCall(afters[i], RS);
 
   if (wrapped)
     RS = RS.pop();
 
   if (!noprint)
-    out(RS);
+    window.out(RS);
 })(arguments);
 __END__
 
@@ -1109,9 +1143,9 @@ if [ "$1" != "-h" ]; then
   nlines=$(grep -c '$' $TMP2 2>/dev/null || echo 0)
 fi
 
-res=$(cat $TMP2 2>/dev/null | js $TMP1 $nlines "$@")
+res=$(cat $TMP2 2>/dev/null | $run_js $TMP1 $nlines "$@")
 ret=$?
-out=$(echo "$res" |sed '/^OUT: /s/^.....//p;d')
+out=$(echo "$res" |sed -n 's/^OUT: //p')
 err=$(echo "$res" |sed '/^ERR: /s/^.....//p;d')
 
 [ -n "$err" ] && echo "$err" 1>&2
